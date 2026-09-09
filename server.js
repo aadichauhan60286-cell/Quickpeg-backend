@@ -9,6 +9,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const { nanoid } = require('nanoid');
 const db = require('./db');
+require('./seed'); // safe to run every startup -- it skips itself if data already exists
 
 const app = express();
 app.use(cors());
