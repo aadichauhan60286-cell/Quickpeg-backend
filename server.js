@@ -139,12 +139,14 @@ app.patch('/api/retailers/:id', (req, res) => {
 });
 
 app.patch('/api/products/:id', (req, res) => {
-  const { price, in_stock, name } = req.body;
+  const { price, in_stock, name, description, category } = req.body;
   const fields = [];
   const vals = [];
   if(price !== undefined){ fields.push('price = ?'); vals.push(price); }
   if(in_stock !== undefined){ fields.push('in_stock = ?'); vals.push(in_stock ? 1 : 0); }
   if(name){ fields.push('name = ?'); vals.push(name); }
+  if(description !== undefined){ fields.push('description = ?'); vals.push(description); }
+  if(category){ fields.push('category = ?'); vals.push(category); }
   if(fields.length === 0) return res.json({ ok: true });
   vals.push(req.params.id);
   db.prepare(`UPDATE products SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
@@ -152,12 +154,12 @@ app.patch('/api/products/:id', (req, res) => {
 });
 
 app.post('/api/retailers/:id/products', (req, res) => {
-  const { name, category, price, kind, tone, cap } = req.body;
+  const { name, category, price, kind, tone, cap, description } = req.body;
   if(!name || !price) return res.status(400).json({ error: 'name and price required' });
   const id = nanoid(10);
-  db.prepare(`INSERT INTO products (id, retailer_id, name, category, price, kind, tone, cap, in_stock)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`).run(
-    id, req.params.id, name, category || 'Beer', price, kind || 'bottle', tone || '#8A7B4F', cap || '#C77D34'
+  db.prepare(`INSERT INTO products (id, retailer_id, name, category, price, kind, tone, cap, description, in_stock)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`).run(
+    id, req.params.id, name, category || 'Beer', price, kind || 'bottle', tone || '#8A7B4F', cap || '#C77D34', description || ''
   );
   res.json({ ok: true, id });
 });
@@ -386,6 +388,79 @@ app.get('/api/riders/:id/earnings', (req, res) => {
     today: { trips: todayRow.trips, earnings: todayRow.earnings },
     week: { trips: weekRow.trips, earnings: weekRow.earnings, avgFare }
   });
+});
+
+// ================= ADMIN (owner control panel) =================
+// Unlike the retailer/rider demo logins, this one actually checks the password --
+// it can see and edit every shop, so it's worth locking down properly later
+// (this is still a plain-text password check, fine for now, not for real launch).
+
+app.post('/api/admin/login', (req, res) => {
+  const { phone, password } = req.body;
+  const admin = db.prepare('SELECT * FROM admins WHERE phone = ? AND password = ?').get(phone, password);
+  if(!admin) return res.status(401).json({ error: 'Incorrect phone number or password' });
+  res.json({ admin: { id: admin.id, name: admin.name, phone: admin.phone } });
+});
+
+// Business-wide snapshot: shops, orders, revenue
+app.get('/api/admin/overview', (req, res) => {
+  const retailerCount = db.prepare('SELECT COUNT(*) as c FROM retailers').get().c;
+  const openCount = db.prepare('SELECT COUNT(*) as c FROM retailers WHERE is_open = 1').get().c;
+  const productCount = db.prepare('SELECT COUNT(*) as c FROM products').get().c;
+
+  const todayRow = db.prepare(`
+    SELECT COUNT(*) as orders, COALESCE(SUM(total),0) as revenue
+    FROM orders WHERE status = 'delivered' AND date(created_at) = date('now')
+  `).get();
+  const weekRow = db.prepare(`
+    SELECT COUNT(*) as orders, COALESCE(SUM(total),0) as revenue
+    FROM orders WHERE status = 'delivered' AND created_at >= datetime('now', '-7 days')
+  `).get();
+  const activeOrders = db.prepare(`
+    SELECT COUNT(*) as c FROM orders WHERE status NOT IN ('delivered','rejected','cancelled')
+  `).get().c;
+
+  res.json({
+    retailers: { total: retailerCount, open: openCount },
+    products: { total: productCount },
+    today: todayRow,
+    week: weekRow,
+    activeOrders
+  });
+});
+
+// All retailers, with a live product/order count for each
+app.get('/api/admin/retailers', (req, res) => {
+  const retailers = db.prepare('SELECT * FROM retailers').all();
+  const withCounts = retailers.map(r => {
+    const productCount = db.prepare('SELECT COUNT(*) as c FROM products WHERE retailer_id = ?').get(r.id).c;
+    const orderCount = db.prepare('SELECT COUNT(*) as c FROM orders WHERE retailer_id = ?').get(r.id).c;
+    return { ...r, productCount, orderCount };
+  });
+  res.json({ retailers: withCounts });
+});
+
+// Owner onboards a brand-new retailer partner
+app.post('/api/admin/retailers', (req, res) => {
+  const { name, address, phone, password, excise_license } = req.body;
+  if(!name || !phone) return res.status(400).json({ error: 'name and phone required' });
+  const id = 'ret_' + nanoid(10);
+  db.prepare(`INSERT INTO retailers (id, name, address, phone, password, excise_license, is_open)
+    VALUES (?, ?, ?, ?, ?, ?, 1)`).run(
+    id, name, address || '', phone, password || 'demo123', excise_license || ''
+  );
+  res.json({ ok: true, id });
+});
+
+// All orders across every shop, most recent first
+app.get('/api/admin/orders', (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  const orders = db.prepare(`
+    SELECT orders.*, retailers.name as retailer_name
+    FROM orders JOIN retailers ON retailers.id = orders.retailer_id
+    ORDER BY orders.created_at DESC LIMIT ?
+  `).all(limit);
+  res.json({ orders });
 });
 
 // ---------- Health check ----------
