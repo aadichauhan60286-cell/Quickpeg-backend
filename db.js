@@ -30,8 +30,17 @@ CREATE TABLE IF NOT EXISTS products (
   kind TEXT DEFAULT 'bottle',
   tone TEXT DEFAULT '#8A7B4F',
   cap TEXT DEFAULT '#C77D34',
+  description TEXT,
   in_stock INTEGER DEFAULT 1,
   FOREIGN KEY(retailer_id) REFERENCES retailers(id)
+);
+
+CREATE TABLE IF NOT EXISTS admins (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  phone TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS customers (
@@ -91,5 +100,9 @@ CREATE INDEX IF NOT EXISTS idx_orders_rider ON orders(rider_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_products_retailer ON products(retailer_id);
 `);
+
+// Safe migration for databases created before the `description` column existed
+try{ db.exec('ALTER TABLE products ADD COLUMN description TEXT'); }
+catch(e){ /* column already exists -- fine */ }
 
 module.exports = db;
